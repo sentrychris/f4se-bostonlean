@@ -17,7 +17,7 @@
                 commit = "d885463d7cea3253b436ded2f4f17fd8423c4eaa",
                 url = "https://github.com/xmake-io/xmake-repo.git"
             },
-            version = "v1.13.0"
+            version = "v1.15.3"
         }
     }
 }
