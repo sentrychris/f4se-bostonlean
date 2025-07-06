@@ -4,7 +4,7 @@ This is a basic plugin template using CommonLibF4.
 
 ### Requirements
 * [XMake](https://xmake.io) [2.8.2+]
-* C++23 Compiler (MSVC, Clang-CL)
+* C++23 Compiler (MSVC or Clang-CL)
 
 ## Getting Started
 ```bat
@@ -21,7 +21,7 @@ xmake build
 > ***Note:*** *This will generate a `build/windows/` directory in the **project's root directory** with the build output.*
 
 ### Build Output (Optional)
-If you want to redirect the build output, set one of or both of the following environment variables:
+If you want to redirect the build output, set one of the following environment variables:
 
 - Path to a Fallout 4 install folder: `XSE_FO4_GAME_PATH`
 
