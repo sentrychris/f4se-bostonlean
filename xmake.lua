@@ -28,8 +28,8 @@ target("commonlibf4-template")
     -- add commonlibsse plugin
     add_rules("commonlibf4.plugin", {
         name = "commonlibf4-template",
-        author = "qudix",
-        description = "F4SE plugin template using CommonLibF4"
+        author = "Chris Rowles",
+        description = "F4SE plugin using CommonLibF4"
     })
 
     -- add src files
