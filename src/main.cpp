@@ -1,67 +1,205 @@
-#pragma region Variables
+// PLEASE NOTE: Plugin metadata is auto-generated to build/.gens/.../rules/commonlibf4/plugin.cpp
+//				There is no need to define F4SEPlugin_Version, the following code is just a demo.
+//F4SE_EXPORT constinit auto F4SEPlugin_Version = []() noexcept {
+//	F4SE::PluginVersionData v{};
+//	v.PluginVersion({ 0, 0, 0, 0 });
+//	v.PluginName("boston-lean");
+//	v.AuthorName("Chris Rowles");
+//	v.UsesAddressLibrary(true);
+//	v.UsesSigScanning(false);
+//	v.IsLayoutDependent(true);
+//	v.HasNoStructUse(false);
+//	v.CompatibleVersions({ F4SE::RUNTIME_LATEST });
+//	return v;
+//}();
+#include "Lean.h"
 
-// Relocated pointer to the target function in the game's memory that updates actor state
-REL::Relocation<uintptr_t> ptr_RunActorUpdates{ REL::ID(556439), 0x17 };
-
-// Storage location for the original function pointer overwritten by the trampoline hook
-uintptr_t RunActorUpdatesOrig;
-
-// Cached pointer to the game's PlayerCamera instance
-RE::PlayerCamera* pcam;
-
-// Cached pointer to the game's PlayerCharacter instance
-RE::PlayerCharacter* p;
-
-#pragma endregion
+#define MATH_PI 3.1415926535f
+#define HAVOKTOFO4 69.99124f
 
 #pragma region Utils
 
-bool IsInADS(RE::Actor* a)
+static void LogAddressForALID(std::uint32_t id, std::ptrdiff_t offset = 0)
 {
-	return ((int)a->gunState == 0x8 || (int)a->gunState == 0x6);
+	const auto modBase = REL::Module::GetSingleton()->base();
+	const auto va = REL::Relocation<std::uintptr_t>{ REL::ID(id) }.address();
+	const auto rva = va - modBase;
+
+	REX::INFO("ID {} -> VA {:p}, RVA 0x{:X} (+0x{:X} -> VA {:p}, RVA 0x{:X})",
+		id,
+		(void*)va,
+		(unsigned)rva,
+		(unsigned)offset,
+		(void*)(va + offset),
+		(unsigned)(rva + offset)
+	);
 }
 
-bool IsInPowerArmor(RE::Actor* a)
+bool IsADS(RE::PlayerCharacter* pc)
 {
-	if (!a->extraList) {
-		return false;
-	}
-
-	return a->extraList->HasType(RE::EXTRA_DATA_TYPE::kPowerArmor);
+	return ((int)pc->gunState == 0x8 || (int)pc->gunState == 0x6);
 }
 
-bool IsFirstPerson()
+bool IsFirstPerson(RE::PlayerCamera* pcam)
 {
 	return pcam->currentState == pcam->cameraStates[RE::CameraState::kFirstPerson];
 }
 
-float Sign(float f)
-{
-	if (f == 0) {
-		return 0;
-	}
+#pragma endregion
 
-	return abs(f) / f;
+#pragma region Hooks
+
+namespace Hooks
+{
+    // Original function type: PlayerControls::ProcessEvent override
+    using ProcessEvent_t = RE::BSEventNotifyControl(
+        RE::PlayerControls*,
+        RE::InputEvent* const&,
+        RE::BSTEventSource<RE::InputEvent*>*);
+
+    struct PlayerControls_ProcessEvent
+    {
+        // Storage for original vfunc ptr
+        static inline REL::Relocation<ProcessEvent_t*> orig{};
+
+        // Replacement vfunc
+        static RE::BSEventNotifyControl thunk(
+            RE::PlayerControls* a_this,
+            RE::InputEvent* const& a_event,
+            RE::BSTEventSource<RE::InputEvent*>* a_src)
+        {
+            // Let the game handle input first
+            const auto ret = orig(a_this, a_event, a_src);
+
+            // Then run BostonLean logic on the same event chain
+            LeanInputSink::Get().ProcessEvent(a_event, a_src);
+            return ret;
+        }
+
+        static void install()
+        {
+            // vfunc index 1 = BSTEventSink::ProcessEvent (index 0 is dtor)
+            REL::Relocation<std::uintptr_t> vtbl{ RE::PlayerControls::VTABLE[0] };
+            orig = vtbl.write_vfunc(1, thunk);
+        }
+    };
 }
 
 #pragma endregion
 
-#pragma region Events
+#pragma region Updates
 
-void HookedActorUpdate(RE::ProcessLists* list, float dt, bool instant)
+// Try to resolve the first-person camera node
+void LeanInputSink::resolve_cam_node()
 {
-	REX::INFO("Successfully hooked native ActorUpdate function");
+    _cam1st = nullptr;
+    _fpRoot = nullptr;
 
-	typedef void (*FnUpdate)(RE::ProcessLists*, float, bool);
-	FnUpdate fn = (FnUpdate)RunActorUpdatesOrig;
-	if (fn) {
-	    (*fn)(list, dt, instant);
+    if (auto* pc = RE::PlayerCharacter::GetSingleton()) {
+        _fpRoot = pc->Get3D(true);  // true = first-person
+        if (_fpRoot) {
+            _cam1st = _fpRoot->GetObjectByName("Camera1st [Cam1]"sv);
+        }
+    }
+}
+
+RE::BSEventNotifyControl LeanInputSink::ProcessEvent(
+	RE::InputEvent* const& a_event,
+	RE::BSTEventSource<RE::InputEvent*>*
+)
+{
+	float axis = _leanAxis;
+
+	for (auto* e = a_event; e; e = e->next) {
+		REX::INFO("Processing inptut event...");
+		if (e->eventType != RE::INPUT_EVENT_TYPE::kButton) {
+			continue;
+		}
+
+		auto* b = e->As<RE::ButtonEvent>();
+		if (!b) {
+			continue;
+		}
+
+		const auto code = b->GetBSButtonCode();
+		const bool isPressed = b->QPressed();
+		const bool justPressed = b->QJustPressed();
+		const bool released = b->QReleased();
+
+		REX::INFO("Processing button press...");
+
+		if (code == RE::BS_BUTTON_CODE::kQ) { // Left
+			if (justPressed || isPressed) axis = -1.0f;
+			if (released) axis = 0.0f;
+		} else if (code == RE::BS_BUTTON_CODE::kE) { // Right
+			if (justPressed || isPressed) axis = +1.0f;
+			if (released) axis = 0.0f;
+		}
+
+		// TODO gamepad support...
 	}
 
-	RE::Actor* a = p;
-	if (IsInADS(a)) {
-		REX::INFO("Entered ADS state");
+	_leanAxis = std::clamp(axis, -1.0f, 1.0f);
+	Update();
+
+	return RE::BSEventNotifyControl::kContinue;
+}
+
+void LeanInputSink::Update()
+{
+	auto *pc = RE::PlayerCharacter::GetSingleton();
+	auto *pcam = RE::PlayerCamera::GetSingleton();
+	if (!pc || !pcam) {
+		return;
 	}
+
+	if (!_cam1st || !_fpRoot) {
+		resolve_cam_node();
+	}
+
+	if (!_cam1st) {
+		return;
+	}
+
+	const bool isAiming1st = IsFirstPerson(pcam) && IsADS(pc);
+	if (isAiming1st) {
+		REX::INFO("Player is aiming...");
+	} else {
+		REX::INFO("no aiming...");
+	}
+
+	const float target = isAiming1st ? _leanAxis : 0.0f;
+
+	// NOTE: getLastVSyncTime() is only availble in commonlibSSE for Skyrim, couple of things:
+	// 1. if we were running in ProcessLists::Update(), we could just use that dt, but we're not
+	// 2. use a small fixed timestamp
+	// 3. measure real time
+	// const float dt = RE::BSInputDeviceManager::GetSingleton()->GetLastVSyncTime();
+	const float dt = 1.0f / 60.0f; // Assume 60FPS
+	const float smooth = std::clamp(dt * 15.0f, 0.0f, 1.0f);
+	_current += (target - _current) * smooth;
+
+	// Transform cam1st
+	constexpr float kMaxOffset = 7.5f; // cm
+	constexpr float kMaxRoll = 6.0f;   // deg
+
+	auto& lt = _cam1st->local;
+	lt.translate = RE::NiPoint3{};
+	lt.rotate = RE::NiMatrix3();
+
+	if (std::abs(_current) > 1e-3f) {
+		const float offset = kMaxOffset * _current;
+		const float rollRad = (kMaxRoll  * -_current) * (MATH_PI / 180.0f);
+
+		lt.translate.x += offset;
+
+		RE::NiMatrix3 rot;
+		rot.FromEulerAnglesXYZ(0.0f, 0.0f, rollRad);
+		lt.rotate = rot;
+	}
+
+	RE::NiUpdateData updateData{};
+	_cam1st->Update(updateData);
 }
 
 #pragma endregion
@@ -70,22 +208,25 @@ void HookedActorUpdate(RE::ProcessLists* list, float dt, bool instant)
 
 void InitPlugin()
 {
-	p = RE::PlayerCharacter::GetSingleton();
-	pcam = RE::PlayerCamera::GetSingleton();
+	LogAddressForALID(556439, 0x17);
+
+	if (auto console = RE::ConsoleLog::GetSingleton()) {
+		console->PrintLine("Boston Lean v0.0.1 - Player combat leaning mechanics");
+		console->PrintLine("By Chris Rowles.");
+	}
+
 	REX::INFO("plugin initialized.");
 }
 
 #pragma endregion
 
+// extern "C" __declspec(dllexport) bool F4SEPlugin_Load(const F4SE::LoadInterface* a_f4se)
 F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
 {
 	F4SE::Init(a_f4se);
 
-	REX::INFO("Hello World!");
-
 	REL::Trampoline& trampoline = REL::GetTrampoline();
 	trampoline.create(static_cast<size_t>(64) * 1024);
-	RunActorUpdatesOrig = trampoline.write_call<5>(ptr_RunActorUpdates.address(), &HookedActorUpdate);
 
 	if (const auto messaging = F4SE::GetMessagingInterface()) {
 		messaging->RegisterListener([](F4SE::MessagingInterface::Message* msg) {
@@ -94,6 +235,7 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
 				case F4SE::MessagingInterface::kGameDataReady:
 					REX::INFO("kGameDataReady event logged");
 					InitPlugin();
+					Hooks::PlayerControls_ProcessEvent::install();
 					break;
 				case F4SE::MessagingInterface::kPostLoad:
 					REX::INFO("kPostLoad event logged");

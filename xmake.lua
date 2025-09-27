@@ -5,8 +5,8 @@ set_xmakever("2.8.2")
 includes("lib/commonlibf4")
 
 -- set project
-set_project("commonlibf4-template")
-set_version("0.0.0")
+set_project("boston-lean")
+set_version("0.0.1")
 set_license("GPL-3.0")
 
 -- set defaults
@@ -21,15 +21,15 @@ add_rules("mode.debug", "mode.releasedbg")
 add_rules("plugin.vsxmake.autoupdate")
 
 -- targets
-target("commonlibf4-template")
+target("boston-lean")
     -- add dependencies to target
     add_deps("commonlibf4")
 
     -- add commonlibsse plugin
     add_rules("commonlibf4.plugin", {
-        name = "commonlibf4-template",
+        name = "BostonLean",
         author = "Chris Rowles",
-        description = "F4SE plugin using CommonLibF4"
+        description = "F4SE plugin using CommonLibF4 to provide character leaning functionality in first person and third person view.",
     })
 
     -- add src files
