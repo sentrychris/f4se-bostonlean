@@ -1,23 +1,41 @@
 #pragma once
 
-class LeanInputSink final : public RE::BSTEventSink<RE::InputEvent*>
+#include "RE/B/ButtonEvent.h"
+#include "RE/I/InputEvent.h"
+#include "RE/N/NiAVObject.h"
+#include "RE/N/NiPointer.h"
+#include "RE/P/PlayerControls.h"
+#include "RE/P/PlayerInputHandler.h"
+
+
+class LeanController final
 {
 public:
-    static LeanInputSink& Get() { static LeanInputSink i; return i; }
+    static LeanController& Get();
 
-    RE::BSEventNotifyControl ProcessEvent(
-        RE::InputEvent* const& a_event,
-        RE::BSTEventSource<RE::InputEvent*>* a_source
-    ) override;
-
+    void OnButtonEvent(const RE::ButtonEvent* a_event);
     void Update();
+    void Reset();
 
 private:
-    LeanInputSink() = default;
+    LeanController() = default;
     void resolve_cam_node();
 
     float _leanAxis = 0.0f;
     float _current = 0.0f;
     RE::NiAVObject* _cam1st = nullptr;
     RE::NiPointer<RE::NiAVObject> _fpRoot;
+};
+
+class LeanInputHandler final : public RE::PlayerInputHandler
+{
+public:
+    static void Install();
+
+    bool ShouldHandleEvent(const RE::InputEvent* a_event) override;
+    void OnButtonEvent(const RE::ButtonEvent* a_event) override;
+    void PerFrameUpdate() override;
+
+private:
+    explicit LeanInputHandler(RE::PlayerControlsData& a_data);
 };
