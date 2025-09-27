@@ -1,39 +1,9 @@
-// PLEASE NOTE: Plugin metadata is auto-generated to build/.gens/.../rules/commonlibf4/plugin.cpp
-//				There is no need to define F4SEPlugin_Version, the following code is just a demo.
-//F4SE_EXPORT constinit auto F4SEPlugin_Version = []() noexcept {
-//	F4SE::PluginVersionData v{};
-//	v.PluginVersion({ 0, 0, 0, 0 });
-//	v.PluginName("boston-lean");
-//	v.AuthorName("Chris Rowles");
-//	v.UsesAddressLibrary(true);
-//	v.UsesSigScanning(false);
-//	v.IsLayoutDependent(true);
-//	v.HasNoStructUse(false);
-//	v.CompatibleVersions({ F4SE::RUNTIME_LATEST });
-//	return v;
-//}();
-#include "Lean.h"
+﻿#include "Lean.h"
 
 #define MATH_PI 3.1415926535f
 #define HAVOKTOFO4 69.99124f
 
 #pragma region Utils
-
-static void LogAddressForALID(std::uint32_t id, std::ptrdiff_t offset = 0)
-{
-	const auto modBase = REL::Module::GetSingleton()->base();
-	const auto va = REL::Relocation<std::uintptr_t>{ REL::ID(id) }.address();
-	const auto rva = va - modBase;
-
-	REX::INFO("ID {} -> VA {:p}, RVA 0x{:X} (+0x{:X} -> VA {:p}, RVA 0x{:X})",
-		id,
-		(void*)va,
-		(unsigned)rva,
-		(unsigned)offset,
-		(void*)(va + offset),
-		(unsigned)(rva + offset)
-	);
-}
 
 bool IsADS(RE::PlayerCharacter* pc)
 {
@@ -51,38 +21,85 @@ bool IsFirstPerson(RE::PlayerCamera* pcam)
 
 namespace Hooks
 {
-    // Original function type: PlayerControls::ProcessEvent override
-    using ProcessEvent_t = RE::BSEventNotifyControl(
-        RE::PlayerControls*,
+    using SinkFn = RE::BSEventNotifyControl(
+        void*,
         RE::InputEvent* const&,
-        RE::BSTEventSource<RE::InputEvent*>*);
+        RE::BSTEventSource<RE::InputEvent*>*
+	);
 
-    struct PlayerControls_ProcessEvent
+    using FnPtr = SinkFn*;
+
+	template <class T, std::size_t VIndex>
+
+    struct InputSinkHook
     {
-        // Storage for original vfunc ptr
-        static inline REL::Relocation<ProcessEvent_t*> orig{};
+        static inline FnPtr orig = nullptr;  // original function pointer we replace
 
-        // Replacement vfunc
         static RE::BSEventNotifyControl thunk(
-            RE::PlayerControls* a_this,
+            void* a_this,
             RE::InputEvent* const& a_event,
             RE::BSTEventSource<RE::InputEvent*>* a_src)
         {
-            // Let the game handle input first
-            const auto ret = orig(a_this, a_event, a_src);
+            // Uncomment for proof:
+            REX::INFO("[BostonLean] THUNK fired: {} VTABLE[{}]", typeid(T).name(), VIndex);
 
-            // Then run BostonLean logic on the same event chain
-            LeanInputSink::Get().ProcessEvent(a_event, a_src);
+            const auto ret = orig(a_this, a_event, a_src);      // call game’s original
+            LeanInputSink::Get().ProcessEvent(a_event, a_src);  // then ours
             return ret;
         }
 
-        static void install()
+        static bool install(const char* name)
         {
-            // vfunc index 1 = BSTEventSink::ProcessEvent (index 0 is dtor)
-            REL::Relocation<std::uintptr_t> vtbl{ RE::PlayerControls::VTABLE[0] };
-            orig = vtbl.write_vfunc(1, thunk);
+            try {
+                // Resolve the vtable base for this class/index
+                REL::Relocation<std::uintptr_t> vtbl{ T::VTABLE[VIndex] };
+                auto* table = reinterpret_cast<std::uintptr_t*>(vtbl.address());
+                if (!table) {
+                    REX::ERROR("[BostonLean] %s V[%zu]: vtable address null", name, VIndex);
+                    return false;
+                }
+
+                // Slot 1 in the BSTEventSink subobject is ProcessEvent
+                auto* slot = &table[1];
+
+                FnPtr before = reinterpret_cast<FnPtr>(*slot);
+                if (!before) {
+                    REX::ERROR("[BostonLean] %s V[%zu]: slot1 is null", name, VIndex);
+                    return false;
+                }
+
+                // Save original, patch with our thunk
+                orig = before;
+                REL::WriteSafeData(reinterpret_cast<std::uintptr_t>(slot),
+                                reinterpret_cast<std::uintptr_t>(&thunk));
+                FnPtr after = reinterpret_cast<FnPtr>(*slot);
+
+                const bool changed = (after == &thunk);
+                REX::INFO("[BostonLean] hook {} V[{}] slot1 before={} after={} changed={}",
+					name, VIndex, (void*)before, (void*)after, changed);
+
+                return changed;
+            } catch (...) {
+                REX::ERROR("[BostonLean] %s V[%zu]: exception during vtable patch", name, VIndex);
+                return false;
+            }
         }
     };
+
+    inline void install_all()
+    {
+        bool any = false;
+
+        any |= InputSinkHook<RE::PlayerControls, 0>::install("RE::PlayerControls");
+        any |= InputSinkHook<RE::PlayerControls, 1>::install("RE::PlayerControls");  // secondary table, if present
+        any |= InputSinkHook<RE::MenuControls,   0>::install("RE::MenuControls");
+
+
+        if (!any) {
+            REX::ERROR("[BostonLean] No InputEvent sink hook installed. "
+                       "Search your headers for classes deriving BSTEventSink<RE::InputEvent*> with VTABLE symbols and add them here.");
+        }
+    }
 }
 
 #pragma endregion
@@ -170,11 +187,6 @@ void LeanInputSink::Update()
 
 	const float target = isAiming1st ? _leanAxis : 0.0f;
 
-	// NOTE: getLastVSyncTime() is only availble in commonlibSSE for Skyrim, couple of things:
-	// 1. if we were running in ProcessLists::Update(), we could just use that dt, but we're not
-	// 2. use a small fixed timestamp
-	// 3. measure real time
-	// const float dt = RE::BSInputDeviceManager::GetSingleton()->GetLastVSyncTime();
 	const float dt = 1.0f / 60.0f; // Assume 60FPS
 	const float smooth = std::clamp(dt * 15.0f, 0.0f, 1.0f);
 	_current += (target - _current) * smooth;
@@ -208,8 +220,6 @@ void LeanInputSink::Update()
 
 void InitPlugin()
 {
-	LogAddressForALID(556439, 0x17);
-
 	if (auto console = RE::ConsoleLog::GetSingleton()) {
 		console->PrintLine("Boston Lean v0.0.1 - Player combat leaning mechanics");
 		console->PrintLine("By Chris Rowles.");
@@ -235,7 +245,7 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
 				case F4SE::MessagingInterface::kGameDataReady:
 					REX::INFO("kGameDataReady event logged");
 					InitPlugin();
-					Hooks::PlayerControls_ProcessEvent::install();
+					Hooks::install_all();
 					break;
 				case F4SE::MessagingInterface::kPostLoad:
 					REX::INFO("kPostLoad event logged");
