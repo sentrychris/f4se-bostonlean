@@ -49,6 +49,8 @@ void LeanController::OnButtonEvent(const RE::ButtonEvent* a_event)
         return;
     }
 
+    REX::INFO("LeanController OnButtonEvent triggered");
+
     float axis = _leanAxis;
 
     const auto code = a_event->GetBSButtonCode();
@@ -148,7 +150,7 @@ void LeanInputHandler::Install()
 
     auto* controls = RE::PlayerControls::GetSingleton();
     if (!controls) {
-        REX::ERROR("[BostonLean] PlayerControls singleton not ready; input handler not installed.");
+		REX::ERROR("[BostonLean] PlayerControls singleton not ready; input handler not installed.");
         return;
     }
 
@@ -171,16 +173,22 @@ bool LeanInputHandler::ShouldHandleEvent(const RE::InputEvent* a_event)
             continue;
         }
 
-		REX::INFO("Checking for lean button presses");
+        REX::INFO("Checking for lean input");
 
-        if (const auto* button = e->As<RE::ButtonEvent>()) {
-            const auto code = button->GetBSButtonCode();
-            if (code == RE::BS_BUTTON_CODE::kQ || code == RE::BS_BUTTON_CODE::kE) {
+        const auto* button = e->As<RE::ButtonEvent>();
+        if (!button) {
+            continue;
+        }
+
+        if (button->device == RE::INPUT_DEVICE::kKeyboard) {
+            const auto sc = static_cast<std::uint32_t>(button->idCode);
+            if (sc == 69 || sc == 81) {
+                REX::INFO("Lean detected, returning true");
                 return true;
             }
         }
 
-		REX::INFO("No detection, returning false");
+        REX::INFO("No lean detected, returning false");
     }
 
     return false;
