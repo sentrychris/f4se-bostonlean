@@ -170,25 +170,24 @@ bool LeanInputHandler::ShouldHandleEvent(const RE::InputEvent* a_event)
 
     for (auto* e = a_event; e; e = e->next) {
         if (e->eventType != RE::INPUT_EVENT_TYPE::kButton) {
+            // If not button event then continue
             continue;
         }
 
-        REX::INFO("Checking for lean input");
-
         const auto* button = e->As<RE::ButtonEvent>();
         if (!button) {
+            // If not derived from button event then continue
             continue;
         }
 
         if (button->device == RE::INPUT_DEVICE::kKeyboard) {
-            const auto sc = static_cast<std::uint32_t>(button->idCode);
-            if (sc == 69 || sc == 81) {
-                REX::INFO("Lean detected, returning true");
+            // Cast the key code and check for Q or E
+            const auto kc = static_cast<std::uint32_t>(button->idCode);
+            if (kc == 81 || kc == 69) {
+                // Q = 81, E = 69
                 return true;
             }
         }
-
-        REX::INFO("No lean detected, returning false");
     }
 
     return false;
