@@ -25,6 +25,15 @@ private:
     float _current = 0.0f;
     RE::NiAVObject* _cam1st = nullptr;
     RE::NiPointer<RE::NiAVObject> _fpRoot;
+
+    RE::NiPoint3  _baseCamLocal{};
+    RE::NiMatrix3 _baseCamRot{};
+    bool _haveCamBasis{false};
+
+    RE::NiNode*   _camNode = nullptr;     // "Camera" NiNode
+    RE::NiNode*   _leanPivot = nullptr;   // inserted parent we control
+    float         _camLocalZ0 = 0.0f;     // baseline camera local Z (for pivot height)
+    bool          _haveRig = false;
 };
 
 class LeanInputHandler final : public RE::PlayerInputHandler

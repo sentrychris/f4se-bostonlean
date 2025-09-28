@@ -24,6 +24,39 @@ namespace
     }
 }
 
+// Reference: https://github.com/jarari/UneducatedShooter/blob/main/src/main.cpp
+// RE::NiNode* InsertBone(RE::NiAVObject* root, RE::NiNode* node, const char* name)
+// {
+// 	RE::NiNode* parent = node->parent;
+// 	RE::NiNode* inserted = (RE::NiNode*)root->GetObjectByName(name);
+// 	if (!inserted) {
+// 		inserted = RE::CreateBone(name);
+// 		//_MESSAGE("%s (%llx) created.", name, inserted);
+// 		if (parent) {
+// 			parent->AttachChild(inserted, true);
+// 			inserted->parent = parent;
+// 		} else {
+// 			parent = node;
+// 		}
+// 		inserted->local.translate = RE::NiPoint3();
+// 		inserted->local.rotate.MakeIdentity();
+// 		inserted->AttachChild(node, true);
+// 		return inserted;
+// 	} else {
+// 		if (!inserted->GetObjectByName(node->name)) {
+// 			if (parent) {
+// 				parent->AttachChild(inserted, true);
+// 				inserted->parent = parent;
+// 			} else {
+// 				parent = node;
+// 			}
+// 			inserted->AttachChild(node, true);
+// 			return inserted;
+// 		}
+// 	}
+// 	return nullptr;
+// }
+
 LeanController& LeanController::Get()
 {
     static LeanController instance;
@@ -38,8 +71,26 @@ void LeanController::resolve_cam_node()
     if (auto* pc = RE::PlayerCharacter::GetSingleton()) {
         _fpRoot = pc->Get3D(true);  // true = first-person
         if (_fpRoot) {
-            // TODO _fpRoot is resolved, resolve the camera...
-            _cam1st = _fpRoot->GetObjectByName("Camera1st [Cam1]"sv);
+            // 1st person skeleton found
+            RE::NiNode* chest = (RE::NiNode*)_fpRoot->GetObjectByName("Chest");
+            if (chest) {
+                // insert a bone
+            }
+
+            RE::NiNode* com = (RE::NiNode*)_fpRoot->GetObjectByName("COM");
+            if (com) {
+                // insert a bone
+            }
+
+            RE::NiNode* camera = (RE::NiNode*)_fpRoot->GetObjectByName("Camera");
+            if (camera) {
+                REX::INFO("camera found");
+
+                _cam1st = _fpRoot->GetObjectByName("Camera");
+                _baseCamLocal = _cam1st->local.translate;
+                _baseCamRot   = _cam1st->local.rotate;
+                _haveCamBasis = true;
+            }
         }
     }
 }
@@ -94,39 +145,56 @@ void LeanController::Update()
         return;
     }
 
-    if (!_cam1st || !_fpRoot) {
+    if (!_cam1st) {
         resolve_cam_node();
     }
 
-    if (!_cam1st) {
+    if (!_cam1st || !_haveCamBasis) {
         return;
     }
 
     const bool isAiming1st = IsFirstPerson(pcam) && IsADS(pc);
     const float target = isAiming1st ? _leanAxis : 0.0f;
 
-    REX::INFO("isAiming1st {}, target {}", isAiming1st, target);
-
-    const float dt = 1.0f / 60.0f;  // Assume 60FPS
+    // smoothing
+    const float dt = 1.0f / 60.0f;
     const float smooth = std::clamp(dt * 15.0f, 0.0f, 1.0f);
     _current += (target - _current) * smooth;
 
-    constexpr float kMaxOffset = 7.5f;  // cm
-    constexpr float kMaxRoll = 6.0f;    // deg
-
     auto& lt = _cam1st->local;
     lt.translate = RE::NiPoint3{};
-    lt.rotate = RE::NiMatrix3();
+    lt.rotate.MakeIdentity();
+
+    constexpr float DEG2RAD       = 0.01745329252f;
+    constexpr float kMaxRollDeg   = 69.0f;   // visual lean amount
+    constexpr float kPivotHeight  = 14.0f;   // cm above camera origin to emulate neck/eyes
+    constexpr float kForwardNudge = 2.5f;    // cm small forward push to clear doorframes
+
+    lt.translate = RE::NiPoint3{};
+    lt.rotate.MakeIdentity();
 
     if (std::abs(_current) > 1e-3f) {
-        const float offset = kMaxOffset * _current;
-        const float rollRad = (kMaxRoll * -_current) * (MATH_PI / 180.0f);
+        // Sign: right-lean for positive _current
+        const float phi = (_current) * kMaxRollDeg * DEG2RAD;
 
-        lt.translate.x += offset;
+        const float s = std::sin(phi);
+        const float c = std::cos(phi);
 
-        RE::NiMatrix3 rot;
-        rot.FromEulerAnglesXYZ(0.0f, 0.0f, rollRad);
-        lt.rotate = rot;
+        // Arc displacement in the camera's LOCAL space (X=right, Y=fwd, Z=up)
+        RE::NiPoint3 deltaLocal(
+            kPivotHeight * s,                // right
+            kForwardNudge * std::abs(s),     // forward
+            kPivotHeight * (c - 1.0f)        // down (negative)
+        );
+
+        // Convert to parent space using the camera’s baseline local basis
+        RE::NiPoint3 deltaParent = _baseCamRot * deltaLocal;
+
+        lt.translate = deltaParent;
+
+        // If you confirm rotation sticks on your chosen node, you can re-enable this:
+        // RE::NiMatrix3 rollM; rollM.FromEulerAnglesXYZ(0.0f, 0.0f, phi);
+        // lt.rotate = rollM * _baseCamRot;
     }
 
     RE::NiUpdateData updateData{};
