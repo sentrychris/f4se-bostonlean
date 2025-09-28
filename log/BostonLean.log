@@ -1,0 +1,10 @@
+[17:15:28.815] [33112] [I] BostonLean v0.0.1.0
+[17:15:28.815] [33112] [D] Init 0 queued hooks
+[17:15:28.815] [33112] [D] Default Trampoline => 0B / 65536B (00.00%)
+[17:15:29.231] [33112] [I] kPostLoad event received.
+[17:15:50.078] [34248] [I] kGameDataReady event received.
+[17:15:50.078] [34248] [I] Lean input handler registered.
+[17:15:50.078] [34248] [I] Plugin initialised.
+[17:16:04.996] [33980] [I] Reload event received; resetting lean controller state.
+[17:16:12.361] [27664] [I] Acquired first-person skeleton 0x382b2e00.
+[17:16:12.361] [27664] [I] Camera basis cached (local z 120.49, pivot anchor 54.22).

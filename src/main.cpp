@@ -1,62 +1,43 @@
-﻿#include "Lean.h"
+#include "Lean.h"
+
 #include <algorithm>
 #include <cmath>
-
+#include <cstdint>
 #include <string_view>
+
 #include "RE/C/ConsoleLog.h"
+#include "RE/N/NiUpdateData.h"
+#include "RE/N/NiPointer.h"
 #include "RE/P/PlayerCamera.h"
 #include "RE/P/PlayerCharacter.h"
+#include "RE/U/UI.h"
 
 using namespace std::literals;
-#define MATH_PI 3.1415926535f
-#define HAVOKTOFO4 69.99124f
 
 namespace
 {
-    bool IsADS(RE::PlayerCharacter* pc)
-    {
-        return ((int)pc->gunState == 0x8 || (int)pc->gunState == 0x6);
-    }
+    constexpr float kPi = 3.1415926535f;
+    constexpr float kDegToRad = kPi / 180.0f;
 
-    bool IsFirstPerson(RE::PlayerCamera* pcam)
+    constexpr float kLeanDeadzone = 1e-3f;
+    constexpr float kLeanEnterSpeed = 12.5f;
+    constexpr float kLeanExitSpeed = 10.0f;
+
+    constexpr float kMaxRollDeg = 28.0f;
+    constexpr float kMaxYawDeg = 5.0f;
+    constexpr float kMaxPitchDeg = 2.5f;
+
+    constexpr float kShoulderShift = 11.0f;
+    constexpr float kForwardShift = 4.0f;
+    constexpr float kVerticalDrop = 2.5f;
+
+    constexpr float kPivotAnchorMin = 10.0f;
+
+    bool IsFirstPerson(const RE::PlayerCamera& a_camera)
     {
-        // RE::BGSMessage
-        return pcam->currentState == pcam->cameraStates[RE::CameraState::kFirstPerson];
+        return a_camera.currentState == a_camera.cameraStates[RE::CameraState::kFirstPerson];
     }
 }
-
-// Reference: https://github.com/jarari/UneducatedShooter/blob/main/src/main.cpp
-// RE::NiNode* InsertBone(RE::NiAVObject* root, RE::NiNode* node, const char* name)
-// {
-// 	RE::NiNode* parent = node->parent;
-// 	RE::NiNode* inserted = (RE::NiNode*)root->GetObjectByName(name);
-// 	if (!inserted) {
-// 		inserted = RE::CreateBone(name);
-// 		//_MESSAGE("%s (%llx) created.", name, inserted);
-// 		if (parent) {
-// 			parent->AttachChild(inserted, true);
-// 			inserted->parent = parent;
-// 		} else {
-// 			parent = node;
-// 		}
-// 		inserted->local.translate = RE::NiPoint3();
-// 		inserted->local.rotate.MakeIdentity();
-// 		inserted->AttachChild(node, true);
-// 		return inserted;
-// 	} else {
-// 		if (!inserted->GetObjectByName(node->name)) {
-// 			if (parent) {
-// 				parent->AttachChild(inserted, true);
-// 				inserted->parent = parent;
-// 			} else {
-// 				parent = node;
-// 			}
-// 			inserted->AttachChild(node, true);
-// 			return inserted;
-// 		}
-// 	}
-// 	return nullptr;
-// }
 
 LeanController& LeanController::Get()
 {
@@ -64,36 +45,196 @@ LeanController& LeanController::Get()
     return instance;
 }
 
-void LeanController::resolve_cam_node()
+void LeanController::Reset()
 {
-    _cam1st = nullptr;
-    _fpRoot = nullptr;
+    _leanAxis = 0.0f;
+    _current = 0.0f;
+    _leftValue = 0.0f;
+    _rightValue = 0.0f;
+    _leanLeftHeld = false;
+    _leanRightHeld = false;
 
-    if (auto* pc = RE::PlayerCharacter::GetSingleton()) {
-        _fpRoot = pc->Get3D(true);  // true = first-person
-        if (_fpRoot) {
-            // 1st person skeleton found
-            RE::NiNode* chest = (RE::NiNode*)_fpRoot->GetObjectByName("Chest");
-            if (chest) {
-                // insert a bone
-            }
+    _haveCamBasis = false;
+    _warnedMissingCamera = false;
+    _warnedMissingParent = false;
+    _wasLeanAllowed = false;
 
-            RE::NiNode* com = (RE::NiNode*)_fpRoot->GetObjectByName("COM");
-            if (com) {
-                // insert a bone
-            }
+    ResetRig();
+}
 
-            RE::NiNode* camera = (RE::NiNode*)_fpRoot->GetObjectByName("Camera");
-            if (camera) {
-                REX::INFO("camera found");
-
-                _cam1st = _fpRoot->GetObjectByName("Camera");
-                _baseCamLocal = _cam1st->local.translate;
-                _baseCamRot   = _cam1st->local.rotate;
-                _haveCamBasis = true;
-            }
-        }
+void LeanController::ResetRig()
+{
+    if (_leanPivot) {
+        _leanPivot->local.translate = RE::NiPoint3();
+        _leanPivot->local.rotate.MakeIdentity();
+        RE::NiUpdateData update{};
+        _leanPivot->Update(update);
     }
+
+    _leanPivot.reset();
+    _camNode.reset();
+    _fpRoot.reset();
+}
+
+bool LeanController::EnsureRig(const RE::PlayerCharacter& a_player)
+{
+    RE::NiAVObject* fpRoot = a_player.Get3D(true);
+    if (!fpRoot) {
+        if (_fpRoot) {
+            REX::DEBUG("First-person skeleton unloaded; clearing lean rig.");
+        }
+        ResetRig();
+        return false;
+    }
+
+    if (_fpRoot.get() != fpRoot) {
+        _fpRoot = fpRoot;
+        _camNode.reset();
+        _leanPivot.reset();
+        _haveCamBasis = false;
+        REX::INFO("Acquired first-person skeleton {:p}.", static_cast<void*>(fpRoot));
+    }
+
+    if (!_camNode) {
+        RE::NiAVObject* cameraNode = _fpRoot->GetObjectByName("Camera");
+        if (!cameraNode) {
+            if (!_warnedMissingCamera) {
+                _warnedMissingCamera = true;
+                REX::WARN("First-person Camera node not found; leaning disabled until skeleton resolves.");
+            }
+            return false;
+        }
+
+        _warnedMissingCamera = false;
+        _camNode = cameraNode;
+        _cameraRestTranslation = _camNode->local.translate;
+        _cameraRestRotation = _camNode->local.rotate;
+        _camLocalZ0 = _cameraRestTranslation.z;
+        const float anchorZ = std::max(_camLocalZ0 * 0.45f, kPivotAnchorMin);
+        _pivotAnchor = { 0.0f, 0.0f, anchorZ };
+        _haveCamBasis = true;
+
+        REX::INFO("Camera basis cached (local z {:.2f}, pivot anchor {:.2f}).", _camLocalZ0, anchorZ);
+    }
+
+    if (_leanPivot && _camNode && _camNode->parent == _leanPivot.get()) {
+        return true;
+    }
+
+    if (!_camNode) {
+        return false;
+    }
+
+    RE::NiNode* parent = _camNode->parent;
+    if (!parent) {
+        if (!_warnedMissingParent) {
+            _warnedMissingParent = true;
+            REX::WARN("Camera node has no parent; unable to insert lean pivot.");
+        }
+        return false;
+    }
+    _warnedMissingParent = false;
+    RE::NiPointer<RE::NiAVObject> cameraPtr;
+    parent->DetachChild(_camNode.get(), cameraPtr);
+    if (!cameraPtr) {
+        REX::ERROR("Failed to detach Camera when inserting lean pivot.");
+        return false;
+    }
+    auto pivot = RE::NiPointer<RE::NiNode>(new RE::NiNode());
+    pivot->local.translate = RE::NiPoint3();
+    pivot->local.rotate.MakeIdentity();
+    pivot->AttachChild(cameraPtr.get(), true);
+
+    parent->AttachChild(pivot.get(), true);
+    _leanPivot = pivot;
+    _camNode = cameraPtr;
+
+    REX::INFO("Lean pivot inserted under %s.", parent->name.c_str());
+
+    return true;
+}
+
+bool LeanController::CanLean(const RE::PlayerCharacter& a_player, const RE::PlayerCamera& a_camera)
+{
+    if (!IsFirstPerson(a_camera)) {
+        return false;
+    }
+
+    if (const auto* ui = RE::UI::GetSingleton(); ui && ui->menuMode != 0) {
+        return false;
+    }
+
+    (void)a_player;
+    return _haveCamBasis && _leanPivot;
+}
+
+void LeanController::RestoreCameraBasis()
+{
+    if (_camNode && _haveCamBasis) {
+        _camNode->local.translate = _cameraRestTranslation;
+        _camNode->local.rotate = _cameraRestRotation;
+    }
+}
+
+void LeanController::ApplyLean(float a_amount)
+{
+    if (!_leanPivot) {
+        return;
+    }
+
+    RestoreCameraBasis();
+
+    if (std::fabs(a_amount) <= kLeanDeadzone) {
+        _leanPivot->local.translate = RE::NiPoint3();
+        _leanPivot->local.rotate.MakeIdentity();
+        RE::NiUpdateData update{};
+        _leanPivot->Update(update);
+        return;
+    }
+
+    const float weight = std::clamp(std::fabs(a_amount), 0.0f, 1.0f);
+    const float rollRad = a_amount * kMaxRollDeg * kDegToRad;
+    const float yawRad = a_amount * kMaxYawDeg * kDegToRad;
+    const float pitchRad = -weight * kMaxPitchDeg * kDegToRad;
+
+    RE::NiMatrix3 rot;
+    rot.FromEulerAnglesXYZ(pitchRad, yawRad, rollRad);
+    _leanPivot->local.rotate = rot;
+
+    const RE::NiPoint3 rotatedAnchor = rot * _pivotAnchor;
+    RE::NiPoint3 translation = _pivotAnchor - rotatedAnchor;
+
+    translation.x += kShoulderShift * a_amount;
+    translation.y += kForwardShift * weight;
+    translation.z -= kVerticalDrop * weight;
+
+    _leanPivot->local.translate = translation;
+
+    RE::NiUpdateData update{};
+    _leanPivot->Update(update);
+}
+
+void LeanController::RecalculateAxis()
+{
+    float axis = 0.0f;
+    const float left = std::clamp(_leftValue, 0.0f, 1.0f);
+    const float right = std::clamp(_rightValue, 0.0f, 1.0f);
+
+    if (_leanLeftHeld && !_leanRightHeld) {
+        axis = -left;
+    } else if (_leanRightHeld && !_leanLeftHeld) {
+        axis = right;
+    } else if (_leanRightHeld && _leanLeftHeld) {
+        axis = right - left;
+    }
+
+    axis = std::clamp(axis, -1.0f, 1.0f);
+
+    if (std::fabs(axis - _leanAxis) > 1e-3f) {
+        REX::DEBUG("Lean axis updated to {:.3f} (left {:.2f}, right {:.2f}).", axis, left, right);
+    }
+
+    _leanAxis = axis;
 }
 
 void LeanController::OnButtonEvent(const RE::ButtonEvent* a_event)
@@ -102,112 +243,55 @@ void LeanController::OnButtonEvent(const RE::ButtonEvent* a_event)
         return;
     }
 
-    // REX::INFO("LeanController OnButtonEvent triggered");
-
-    float axis = _leanAxis;
-
     const auto code = a_event->GetBSButtonCode();
-    const bool isPressed = a_event->QPressed();
-    const bool justPressed = a_event->QJustPressed();
-    const bool released = a_event->QReleased();
+    const float analog = std::clamp(a_event->QAnalogValue(), 0.0f, 1.0f);
+    const bool pressed = analog > 0.0f;
 
-    // REX::INFO("Key {}, isPressed {}, justPressed {}, released {}, axis {}",
-    //     static_cast<std::uint32_t>(code), isPressed, justPressed, released, axis);
-
-    if (code == RE::BS_BUTTON_CODE::kQ) {  // Left
-        if (isPressed) { // good
-            axis = -1.0f;
-        }
-
-        if (released) { // good
-            axis = 0.0f;
-        }
-    } else if (code == RE::BS_BUTTON_CODE::kE) {  // Right
-        if (isPressed) { // good
-            axis = 1.0f;
-        }
-        if (released) { // good
-            axis = 0.0f;
-        }
-    } else {
+    switch (code) {
+    case RE::BS_BUTTON_CODE::kQ:
+        _leanLeftHeld = pressed;
+        _leftValue = pressed ? analog : 0.0f;
+        REX::DEBUG("Lean left input {} (analog {:.2f}).", pressed ? "pressed" : "released", analog);
+        break;
+    case RE::BS_BUTTON_CODE::kE:
+        _leanRightHeld = pressed;
+        _rightValue = pressed ? analog : 0.0f;
+        REX::DEBUG("Lean right input {} (analog {:.2f}).", pressed ? "pressed" : "released", analog);
+        break;
+    default:
         return;
     }
 
-    _leanAxis = std::clamp(axis, -1.0f, 1.0f);
-    Update();
+    RecalculateAxis();
 }
 
 void LeanController::Update()
 {
-    auto* pc = RE::PlayerCharacter::GetSingleton();
-    auto* pcam = RE::PlayerCamera::GetSingleton();
-    if (!pc || !pcam) {
-        REX::ERROR("Player character or camera instance not available!");
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    auto* camera = RE::PlayerCamera::GetSingleton();
+    if (!player || !camera) {
         return;
     }
 
-    if (!_cam1st) {
-        resolve_cam_node();
+    const bool rigReady = EnsureRig(*player);
+    const bool allowLean = rigReady && CanLean(*player, *camera);
+
+    if (_wasLeanAllowed != allowLean) {
+        _wasLeanAllowed = allowLean;
+        REX::DEBUG("Lean availability {}.", allowLean ? "enabled" : "disabled");
     }
 
-    if (!_cam1st || !_haveCamBasis) {
-        return;
+    const float target = allowLean ? _leanAxis : 0.0f;
+    const float speed = std::fabs(target) > std::fabs(_current) ? kLeanEnterSpeed : kLeanExitSpeed;
+    const float alpha = std::clamp(speed * (1.0f / 60.0f), 0.0f, 1.0f);
+
+    _current += (target - _current) * alpha;
+
+    if (std::fabs(_current) <= kLeanDeadzone) {
+        _current = 0.0f;
     }
 
-    const bool isAiming1st = IsFirstPerson(pcam) && IsADS(pc);
-    const float target = isAiming1st ? _leanAxis : 0.0f;
-
-    // smoothing
-    const float dt = 1.0f / 60.0f;
-    const float smooth = std::clamp(dt * 15.0f, 0.0f, 1.0f);
-    _current += (target - _current) * smooth;
-
-    auto& lt = _cam1st->local;
-    lt.translate = RE::NiPoint3{};
-    lt.rotate.MakeIdentity();
-
-    constexpr float DEG2RAD       = 0.01745329252f;
-    constexpr float kMaxRollDeg   = 69.0f;   // visual lean amount
-    constexpr float kPivotHeight  = 14.0f;   // cm above camera origin to emulate neck/eyes
-    constexpr float kForwardNudge = 2.5f;    // cm small forward push to clear doorframes
-
-    lt.translate = RE::NiPoint3{};
-    lt.rotate.MakeIdentity();
-
-    if (std::abs(_current) > 1e-3f) {
-        // Sign: right-lean for positive _current
-        const float phi = (_current) * kMaxRollDeg * DEG2RAD;
-
-        const float s = std::sin(phi);
-        const float c = std::cos(phi);
-
-        // Arc displacement in the camera's LOCAL space (X=right, Y=fwd, Z=up)
-        RE::NiPoint3 deltaLocal(
-            kPivotHeight * s,                // right
-            kForwardNudge * std::abs(s),     // forward
-            kPivotHeight * (c - 1.0f)        // down (negative)
-        );
-
-        // Convert to parent space using the camera’s baseline local basis
-        RE::NiPoint3 deltaParent = _baseCamRot * deltaLocal;
-
-        lt.translate = deltaParent;
-
-        // If you confirm rotation sticks on your chosen node, you can re-enable this:
-        // RE::NiMatrix3 rollM; rollM.FromEulerAnglesXYZ(0.0f, 0.0f, phi);
-        // lt.rotate = rollM * _baseCamRot;
-    }
-
-    RE::NiUpdateData updateData{};
-    _cam1st->Update(updateData);
-}
-
-void LeanController::Reset()
-{
-    _leanAxis = 0.0f;
-    _current = 0.0f;
-    _cam1st = nullptr;
-    _fpRoot = nullptr;
+    ApplyLean(_current);
 }
 
 namespace
@@ -215,7 +299,8 @@ namespace
     LeanInputHandler* g_inputHandler = nullptr;
 }
 
-LeanInputHandler::LeanInputHandler(RE::PlayerControlsData& a_data) : RE::PlayerInputHandler(a_data)
+LeanInputHandler::LeanInputHandler(RE::PlayerControlsData& a_data) :
+    RE::PlayerInputHandler(a_data)
 {}
 
 void LeanInputHandler::Install()
@@ -226,7 +311,7 @@ void LeanInputHandler::Install()
 
     auto* controls = RE::PlayerControls::GetSingleton();
     if (!controls) {
-		REX::ERROR("PlayerControls singleton not ready; input handler not installed.");
+        REX::ERROR("PlayerControls singleton not ready; lean input handler not installed.");
         return;
     }
 
@@ -240,27 +325,10 @@ void LeanInputHandler::Install()
 
 bool LeanInputHandler::ShouldHandleEvent(const RE::InputEvent* a_event)
 {
-    if (!a_event) {
-        return false;
-    }
-
     for (auto* e = a_event; e; e = e->next) {
-        if (e->eventType != RE::INPUT_EVENT_TYPE::kButton) {
-            // If not button event then continue
-            continue;
-        }
-
-        const auto* button = e->As<RE::ButtonEvent>();
-        if (!button) {
-            // If not derived from button event then continue
-            continue;
-        }
-
-        if (button->device == RE::INPUT_DEVICE::kKeyboard) {
-            // Cast the key code and check for Q or E
-            const auto kc = static_cast<std::uint32_t>(button->idCode);
-            if (kc == 81 || kc == 69) {
-                // Q = 81, E = 69
+        if (const auto* button = e->As<RE::ButtonEvent>()) {
+            const auto code = button->GetBSButtonCode();
+            if (code == RE::BS_BUTTON_CODE::kQ || code == RE::BS_BUTTON_CODE::kE) {
                 return true;
             }
         }
@@ -276,20 +344,19 @@ void LeanInputHandler::OnButtonEvent(const RE::ButtonEvent* a_event)
 
 void LeanInputHandler::PerFrameUpdate()
 {
-	// [28668] [I] LeanInputHandler frame update
     LeanController::Get().Update();
 }
 
 void InitPlugin()
 {
-    if (auto console = RE::ConsoleLog::GetSingleton()) {
-        console->PrintLine("Boston Lean v0.0.1 - Player combat leaning mechanics");
+    if (auto* console = RE::ConsoleLog::GetSingleton()) {
+        console->PrintLine("Boston Lean v0.1.0 - First-person leaning overhaul");
         console->PrintLine("By Chris Rowles.");
     }
 
     LeanInputHandler::Install();
 
-    REX::INFO("plugin initialized.");
+    REX::INFO("Plugin initialised.");
 }
 
 F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
@@ -299,15 +366,22 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
     REL::Trampoline& trampoline = REL::GetTrampoline();
     trampoline.create(static_cast<std::size_t>(64) * 1024);
 
-    if (const auto messaging = F4SE::GetMessagingInterface()) {
+    if (const auto* messaging = F4SE::GetMessagingInterface()) {
         messaging->RegisterListener([](F4SE::MessagingInterface::Message* msg) {
             switch (msg->type) {
             case F4SE::MessagingInterface::kGameDataReady:
-                REX::INFO("kGameDataReady event logged");
+                REX::INFO("kGameDataReady event received.");
                 InitPlugin();
                 break;
             case F4SE::MessagingInterface::kPostLoad:
-                REX::INFO("kPostLoad event logged");
+                REX::INFO("kPostLoad event received.");
+                break;
+            case F4SE::MessagingInterface::kPostLoadGame:
+            case F4SE::MessagingInterface::kNewGame:
+                REX::INFO("Reload event received; resetting lean controller state.");
+                LeanController::Get().Reset();
+                break;
+            default:
                 break;
             }
         });
@@ -315,5 +389,10 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
 
     return true;
 }
+
+
+
+
+
 
 
