@@ -13,15 +13,15 @@ using namespace std::literals;
 
 namespace
 {
-bool IsADS(RE::PlayerCharacter* pc)
-{
-    return ((int)pc->gunState == 0x8 || (int)pc->gunState == 0x6);
-}
+    bool IsADS(RE::PlayerCharacter* pc)
+    {
+        return ((int)pc->gunState == 0x8 || (int)pc->gunState == 0x6);
+    }
 
-bool IsFirstPerson(RE::PlayerCamera* pcam)
-{
-    return pcam->currentState == pcam->cameraStates[RE::CameraState::kFirstPerson];
-}
+    bool IsFirstPerson(RE::PlayerCamera* pcam)
+    {
+        return pcam->currentState == pcam->cameraStates[RE::CameraState::kFirstPerson];
+    }
 }
 
 LeanController& LeanController::Get()
@@ -49,7 +49,7 @@ void LeanController::OnButtonEvent(const RE::ButtonEvent* a_event)
         return;
     }
 
-    REX::INFO("LeanController OnButtonEvent triggered");
+    // REX::INFO("LeanController OnButtonEvent triggered");
 
     float axis = _leanAxis;
 
@@ -57,6 +57,23 @@ void LeanController::OnButtonEvent(const RE::ButtonEvent* a_event)
     const bool isPressed = a_event->QPressed();
     const bool justPressed = a_event->QJustPressed();
     const bool released = a_event->QReleased();
+
+    REX::INFO("Key {}, isPressed {}, justPressed {}, released {}, axis {}",
+        static_cast<std::uint32_t>(code), isPressed, justPressed, released, axis);
+
+    const auto* button = a_event->As<RE::ButtonEvent>();
+    if (!button) {
+        // If not derived from button event then continue
+        return;
+    }
+
+    if (button->device == RE::INPUT_DEVICE::kKeyboard) {
+        // Cast the key code and check for Q or E
+        const auto kc = static_cast<std::uint32_t>(button->idCode);
+        if (kc == 81) {
+            // cool
+        }
+    }
 
     if (code == RE::BS_BUTTON_CODE::kQ) {  // Left
         if (justPressed || isPressed) {
@@ -135,11 +152,10 @@ void LeanController::Reset()
 
 namespace
 {
-LeanInputHandler* g_inputHandler = nullptr;
+    LeanInputHandler* g_inputHandler = nullptr;
 }
 
-LeanInputHandler::LeanInputHandler(RE::PlayerControlsData& a_data) :
-    RE::PlayerInputHandler(a_data)
+LeanInputHandler::LeanInputHandler(RE::PlayerControlsData& a_data) : RE::PlayerInputHandler(a_data)
 {}
 
 void LeanInputHandler::Install()
@@ -150,7 +166,7 @@ void LeanInputHandler::Install()
 
     auto* controls = RE::PlayerControls::GetSingleton();
     if (!controls) {
-		REX::ERROR("[BostonLean] PlayerControls singleton not ready; input handler not installed.");
+		REX::ERROR("PlayerControls singleton not ready; input handler not installed.");
         return;
     }
 
@@ -206,15 +222,15 @@ void LeanInputHandler::PerFrameUpdate()
 
 namespace
 {
-void InitPlugin()
-{
-    if (auto console = RE::ConsoleLog::GetSingleton()) {
-        console->PrintLine("Boston Lean v0.0.1 - Player combat leaning mechanics");
-        console->PrintLine("By Chris Rowles.");
-    }
+    void InitPlugin()
+    {
+        if (auto console = RE::ConsoleLog::GetSingleton()) {
+            console->PrintLine("Boston Lean v0.0.1 - Player combat leaning mechanics");
+            console->PrintLine("By Chris Rowles.");
+        }
 
-    REX::INFO("plugin initialized.");
-}
+        REX::INFO("plugin initialized.");
+    }
 }
 
 F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
