@@ -20,6 +20,7 @@ namespace
 
     bool IsFirstPerson(RE::PlayerCamera* pcam)
     {
+        // RE::BGSMessage
         return pcam->currentState == pcam->cameraStates[RE::CameraState::kFirstPerson];
     }
 }
@@ -279,17 +280,16 @@ void LeanInputHandler::PerFrameUpdate()
     LeanController::Get().Update();
 }
 
-namespace
+void InitPlugin()
 {
-    void InitPlugin()
-    {
-        if (auto console = RE::ConsoleLog::GetSingleton()) {
-            console->PrintLine("Boston Lean v0.0.1 - Player combat leaning mechanics");
-            console->PrintLine("By Chris Rowles.");
-        }
-
-        REX::INFO("plugin initialized.");
+    if (auto console = RE::ConsoleLog::GetSingleton()) {
+        console->PrintLine("Boston Lean v0.0.1 - Player combat leaning mechanics");
+        console->PrintLine("By Chris Rowles.");
     }
+
+    LeanInputHandler::Install();
+
+    REX::INFO("plugin initialized.");
 }
 
 F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
@@ -305,7 +305,6 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
             case F4SE::MessagingInterface::kGameDataReady:
                 REX::INFO("kGameDataReady event logged");
                 InitPlugin();
-                LeanInputHandler::Install();
                 break;
             case F4SE::MessagingInterface::kPostLoad:
                 REX::INFO("kPostLoad event logged");
