@@ -38,6 +38,7 @@ void LeanController::resolve_cam_node()
     if (auto* pc = RE::PlayerCharacter::GetSingleton()) {
         _fpRoot = pc->Get3D(true);  // true = first-person
         if (_fpRoot) {
+            // TODO _fpRoot is resolved, resolve the camera...
             _cam1st = _fpRoot->GetObjectByName("Camera1st [Cam1]"sv);
         }
     }
@@ -58,35 +59,22 @@ void LeanController::OnButtonEvent(const RE::ButtonEvent* a_event)
     const bool justPressed = a_event->QJustPressed();
     const bool released = a_event->QReleased();
 
-    REX::INFO("Key {}, isPressed {}, justPressed {}, released {}, axis {}",
-        static_cast<std::uint32_t>(code), isPressed, justPressed, released, axis);
-
-    const auto* button = a_event->As<RE::ButtonEvent>();
-    if (!button) {
-        // If not derived from button event then continue
-        return;
-    }
-
-    if (button->device == RE::INPUT_DEVICE::kKeyboard) {
-        // Cast the key code and check for Q or E
-        const auto kc = static_cast<std::uint32_t>(button->idCode);
-        if (kc == 81) {
-            // cool
-        }
-    }
+    // REX::INFO("Key {}, isPressed {}, justPressed {}, released {}, axis {}",
+    //     static_cast<std::uint32_t>(code), isPressed, justPressed, released, axis);
 
     if (code == RE::BS_BUTTON_CODE::kQ) {  // Left
-        if (justPressed || isPressed) {
+        if (isPressed) { // good
             axis = -1.0f;
         }
-        if (released) {
+
+        if (released) { // good
             axis = 0.0f;
         }
     } else if (code == RE::BS_BUTTON_CODE::kE) {  // Right
-        if (justPressed || isPressed) {
+        if (isPressed) { // good
             axis = 1.0f;
         }
-        if (released) {
+        if (released) { // good
             axis = 0.0f;
         }
     } else {
@@ -102,6 +90,7 @@ void LeanController::Update()
     auto* pc = RE::PlayerCharacter::GetSingleton();
     auto* pcam = RE::PlayerCamera::GetSingleton();
     if (!pc || !pcam) {
+        REX::ERROR("Player character or camera instance not available!");
         return;
     }
 
@@ -115,6 +104,8 @@ void LeanController::Update()
 
     const bool isAiming1st = IsFirstPerson(pcam) && IsADS(pc);
     const float target = isAiming1st ? _leanAxis : 0.0f;
+
+    REX::INFO("isAiming1st {}, target {}", isAiming1st, target);
 
     const float dt = 1.0f / 60.0f;  // Assume 60FPS
     const float smooth = std::clamp(dt * 15.0f, 0.0f, 1.0f);
